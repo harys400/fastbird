@@ -1,0 +1,1015 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Flappy Bird Premium Edition</title>
+    <style>
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+            user-select: none;
+            -webkit-user-select: none;
+        }
+
+        body {
+            background-color: #0b0e14;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            overflow: hidden;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        #gameContainer {
+            position: relative;
+            width: 100%;
+            max-width: 480px;
+            height: 100vh;
+            max-height: 640px;
+            aspect-ratio: 3 / 4;
+            box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8);
+            border-radius: 16px;
+            overflow: hidden;
+            border: 4px solid #1a2230;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            background-color: #1a0c2e;
+        }
+    </style>
+</head>
+<body>
+
+<div id="gameContainer">
+    <canvas id="gameCanvas" width="480" height="640"></canvas>
+</div>
+
+<script>
+    // ==========================================
+    // CONFIGURATION ET CONSTANTES GLOBALES
+    // ==========================================
+    const CONFIG = {
+        BASE_SPEED: 170, // Pixels par seconde
+        GRAVITY: 980,    // Pixels par seconde^2
+        JUMP_FORCE: -340,
+        PIPE_GAP: 145,
+        PIPE_WIDTH: 72,
+        SPAWN_INTERVAL: 1.8, // secondes
+        GROUND_HEIGHT: 80
+    };
+
+    // ==========================================
+    // MODULE DE SAUVEGARDE & PERSISTANCE (localStorage)
+    // ==========================================
+    class SaveSystem {
+        static get() {
+            const defaultData = {
+                highScore: 0,
+                coins: 0,
+                activeSkin: 'classic',
+                unlockedSkins: ['classic']
+            };
+            try {
+                const data = localStorage.getItem('flappy_premium_save');
+                return data ? { ...defaultData, ...JSON.parse(data) } : defaultData;
+            } catch(e) {
+                return defaultData;
+            }
+        }
+
+        static save(data) {
+            try {
+                localStorage.setItem('flappy_premium_save', JSON.stringify(data));
+            } catch(e) {}
+        }
+    }
+
+    // ==========================================
+    // CONFIGURATION DES SKINS
+    // ==========================================
+    const SKINS = {
+        classic: { name: 'Classique', color: '#FAD02C', wingColor: '#FFF275', trailColor: 'rgba(255, 255, 255, 0.4)', price: 0 },
+        ninja: { name: 'Shinobi', color: '#2C3E50', wingColor: '#7F8C8D', trailColor: 'rgba(44, 62, 80, 0.6)', price: 25 },
+        cosmo: { name: 'Cosmo', color: '#E74C3C', wingColor: '#3498DB', trailColor: 'rgba(231, 76, 60, 0.8)', price: 50 }
+    };
+
+    // ==========================================
+    // MODULE AUDIO PROCÉDURAL (Web Audio API)
+    // ==========================================
+    class AudioEngine {
+        constructor() {
+            this.ctx = null;
+        }
+
+        init() {
+            if (!this.ctx) {
+                this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+            }
+        }
+
+        playJump() {
+            this.init();
+            if (!this.ctx) return;
+            let osc = this.ctx.createOscillator();
+            let gain = this.ctx.createGain();
+            osc.connect(gain);
+            gain.connect(this.ctx.destination);
+            osc.type = 'triangle';
+            osc.frequency.setValueAtTime(320, this.ctx.currentTime);
+            osc.frequency.exponentialRampToValueAtTime(680, this.ctx.currentTime + 0.12);
+            gain.gain.setValueAtTime(0.12, this.ctx.currentTime);
+            gain.gain.linearRampToValueAtTime(0.01, this.ctx.currentTime + 0.12);
+            osc.start();
+            osc.stop(this.ctx.currentTime + 0.12);
+        }
+
+        playScore() {
+            this.init();
+            if (!this.ctx) return;
+            let osc = this.ctx.createOscillator();
+            let gain = this.ctx.createGain();
+            osc.connect(gain);
+            gain.connect(this.ctx.destination);
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(523.25, this.ctx.currentTime); // C5
+            osc.frequency.setValueAtTime(783.99, this.ctx.currentTime + 0.08); // G5
+            gain.gain.setValueAtTime(0.08, this.ctx.currentTime);
+            gain.gain.linearRampToValueAtTime(0.01, this.ctx.currentTime + 0.25);
+            osc.start();
+            osc.stop(this.ctx.currentTime + 0.25);
+        }
+
+        playCoin() {
+            this.init();
+            if (!this.ctx) return;
+            let osc = this.ctx.createOscillator();
+            let gain = this.ctx.createGain();
+            osc.connect(gain);
+            gain.connect(this.ctx.destination);
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(987.77, this.ctx.currentTime); // B5
+            osc.frequency.setValueAtTime(1318.51, this.ctx.currentTime + 0.08); // E6
+            gain.gain.setValueAtTime(0.1, this.ctx.currentTime);
+            gain.gain.linearRampToValueAtTime(0.01, this.ctx.currentTime + 0.2);
+            osc.start();
+            osc.stop(this.ctx.currentTime + 0.2);
+        }
+
+        playHit() {
+            this.init();
+            if (!this.ctx) return;
+            let osc = this.ctx.createOscillator();
+            let gain = this.ctx.createGain();
+            osc.connect(gain);
+            gain.connect(this.ctx.destination);
+            osc.type = 'sawtooth';
+            osc.frequency.setValueAtTime(180, this.ctx.currentTime);
+            osc.frequency.linearRampToValueAtTime(40, this.ctx.currentTime + 0.4);
+            gain.gain.setValueAtTime(0.25, this.ctx.currentTime);
+            gain.gain.linearRampToValueAtTime(0.01, this.ctx.currentTime + 0.4);
+            osc.start();
+            osc.stop(this.ctx.currentTime + 0.4);
+        }
+    }
+
+    const audio = new AudioEngine();
+
+    // ==========================================
+    // SYSTÈME DE PARTICULES (Explosions & Traînées)
+    // ==========================================
+    class Particle {
+        constructor(x, y, vx, vy, color, size, life, decay, type = 'normal') {
+            this.x = x;
+            this.y = y;
+            this.vx = vx;
+            this.vy = vy;
+            this.color = color;
+            this.size = size;
+            this.life = life; // 0 à 1
+            this.decay = decay;
+            this.type = type;
+        }
+
+        update(dt) {
+            this.x += this.vx * dt;
+            this.y += this.vy * dt;
+            this.life -= this.decay * dt;
+            if (this.type === 'gravity') {
+                this.vy += 300 * dt;
+            }
+        }
+
+        draw(ctx) {
+            ctx.save();
+            ctx.globalAlpha = Math.max(0, this.life);
+            ctx.fillStyle = this.color;
+            ctx.beginPath();
+            if (this.type === 'star') {
+                // Rendu en forme d'étoile
+                let rot = Math.PI / 2 * 3;
+                let x = this.x;
+                let y = this.y;
+                let step = Math.PI / 5;
+                ctx.moveTo(x, y - this.size);
+                for (let i = 0; i < 5; i++) {
+                    x = this.x + Math.cos(rot) * this.size;
+                    y = this.y + Math.sin(rot) * this.size;
+                    ctx.lineTo(x, y);
+                    rot += step;
+                    x = this.x + Math.cos(rot) * (this.size / 2);
+                    y = this.y + Math.sin(rot) * (this.size / 2);
+                    ctx.lineTo(x, y);
+                    rot += step;
+                }
+                ctx.closePath();
+                ctx.fill();
+            } else {
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            ctx.restore();
+        }
+    }
+
+    class ParticleSystem {
+        constructor() {
+            this.particles = [];
+        }
+
+        spawnTrail(x, y, color) {
+            this.particles.push(new Particle(
+                x, y, 
+                -80 - Math.random() * 40, (Math.random() - 0.5) * 30, 
+                color, Math.random() * 5 + 2, 1, 1.8, 'normal'
+            ));
+        }
+
+        spawnJumpTrail(x, y) {
+            for (let i = 0; i < 8; i++) {
+                this.particles.push(new Particle(
+                    x, y + 10, 
+                    (Math.random() - 0.5) * 100, Math.random() * 100 + 50, 
+                    'rgba(255, 255, 255, 0.6)', Math.random() * 4 + 2, 1, 2.5, 'normal'
+                ));
+            }
+        }
+
+        spawnScoreExplosion(x, y) {
+            for (let i = 0; i < 15; i++) {
+                let angle = Math.random() * Math.PI * 2;
+                let speed = Math.random() * 150 + 50;
+                this.particles.push(new Particle(
+                    x, y, 
+                    Math.cos(angle) * speed, Math.sin(angle) * speed, 
+                    '#FFD700', Math.random() * 6 + 3, 1, 1.2, 'star'
+                ));
+            }
+        }
+
+        spawnDeathExplosion(x, y, skinColor) {
+            // Plumes et poussière de mort
+            for (let i = 0; i < 20; i++) {
+                let angle = Math.random() * Math.PI * 2;
+                let speed = Math.random() * 200 + 50;
+                this.particles.push(new Particle(
+                    x, y, 
+                    Math.cos(angle) * speed, Math.sin(angle) * speed, 
+                    skinColor, Math.random() * 8 + 4, 1, 1.0, 'gravity'
+                ));
+            }
+        }
+
+        update(dt) {
+            for (let i = this.particles.length - 1; i >= 0; i--) {
+                this.particles[i].update(dt);
+                if (this.particles[i].life <= 0) {
+                    this.particles.splice(i, 1);
+                }
+            }
+        }
+
+        draw(ctx) {
+            this.particles.forEach(p => p.draw(ctx));
+        }
+
+        clear() {
+            this.particles = [];
+        }
+    }
+
+    // ==========================================
+    // ENTITÉ OISEAU / JOUEUR
+    // ==========================================
+    class Player {
+        constructor() {
+            this.x = 100;
+            this.y = 280;
+            this.radius = 16;
+            this.velocity = 0;
+            this.angle = 0;
+            this.activeSkin = 'classic';
+        }
+
+        reset() {
+            this.y = 280;
+            this.velocity = 0;
+            this.angle = 0;
+        }
+
+        jump(particleSystem) {
+            this.velocity = CONFIG.JUMP_FORCE;
+            audio.playJump();
+            particleSystem.spawnJumpTrail(this.x, this.y);
+        }
+
+        update(dt, particleSystem) {
+            this.velocity += CONFIG.GRAVITY * dt;
+            this.y += this.velocity * dt;
+
+            // Inclinaison dynamique
+            this.angle = Math.min(Math.max(this.velocity * 0.002, -0.6), 0.9);
+
+            // Collisions limites écran
+            if (this.y - this.radius <= 0) {
+                this.y = this.radius;
+                this.velocity = 0;
+            }
+
+            // Génération passive de traînée
+            if (Math.random() < 0.3) {
+                particleSystem.spawnTrail(this.x - 10, this.y, SKINS[this.activeSkin].trailColor);
+            }
+        }
+
+        draw(ctx) {
+            ctx.save();
+            ctx.translate(this.x, this.y);
+            ctx.rotate(this.angle);
+
+            const skin = SKINS[this.activeSkin];
+
+            // Corps
+            ctx.fillStyle = skin.color;
+            ctx.strokeStyle = '#111';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.arc(0, 0, this.radius, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+
+            // Œil
+            ctx.fillStyle = '#FFFFFF';
+            ctx.beginPath();
+            ctx.arc(6, -5, 7, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+
+            ctx.fillStyle = '#000000';
+            ctx.beginPath();
+            ctx.arc(8, -5, 2.5, 0, Math.PI * 2);
+            ctx.fill();
+
+            // Bec
+            ctx.fillStyle = '#FF7F11';
+            ctx.beginPath();
+            ctx.moveTo(10, -1);
+            ctx.lineTo(22, 2);
+            ctx.lineTo(10, 6);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+
+            // Aile animée
+            ctx.fillStyle = skin.wingColor;
+            ctx.beginPath();
+            let wingWave = Math.sin(Date.now() * 0.015) * 3;
+            ctx.ellipse(-7, 2, 9, 6 + wingWave, Math.PI / 8, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+
+            ctx.restore();
+        }
+    }
+
+    // ==========================================
+    // PIÈCES ET ITEMS COLLECTIBLES
+    // ==========================================
+    class Coin {
+        constructor(x, y) {
+            this.x = x;
+            this.y = y;
+            this.radius = 10;
+            this.collected = false;
+            this.pulseTimer = 0;
+        }
+
+        update(speed, dt) {
+            this.x -= speed * dt;
+            this.pulseTimer += dt * 5;
+        }
+
+        checkCollision(bird) {
+            if (this.collected) return false;
+            const dist = Math.hypot(bird.x - this.x, bird.y - this.y);
+            return dist < bird.radius + this.radius;
+        }
+
+        draw(ctx) {
+            if (this.collected) return;
+            ctx.save();
+            let pulse = Math.sin(this.pulseTimer) * 2;
+            
+            ctx.shadowColor = '#FFD700';
+            ctx.shadowBlur = 10;
+            ctx.fillStyle = '#FFD700';
+            ctx.strokeStyle = '#B8860B';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(this.x, this.y, this.radius + pulse, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+
+            // Reflet brillant au centre
+            ctx.fillStyle = '#FFF';
+            ctx.beginPath();
+            ctx.arc(this.x - 3, this.y - 3, 3, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.restore();
+        }
+    }
+
+    // ==========================================
+    // MODULE D'OBSTACLES (Pipes)
+    // ==========================================
+    class Pipe {
+        constructor(canvasWidth, canvasHeight) {
+            this.x = canvasWidth;
+            const minHeight = 80;
+            const maxHeight = canvasHeight - CONFIG.GROUND_HEIGHT - CONFIG.PIPE_GAP - minHeight;
+            this.topHeight = Math.floor(Math.random() * (maxHeight - minHeight + 1)) + minHeight;
+            this.bottomY = this.topHeight + CONFIG.PIPE_GAP;
+            this.bottomHeight = canvasHeight - CONFIG.GROUND_HEIGHT - this.bottomY;
+            this.passed = false;
+        }
+
+        update(speed, dt) {
+            this.x -= speed * dt;
+        }
+
+        checkCollision(bird) {
+            // Collision Cercle - AABB ultra précise
+            let closestX = Math.max(this.x, Math.min(bird.x, this.x + CONFIG.PIPE_WIDTH));
+            
+            // Tuyau supérieur
+            let closestYTop = Math.max(0, Math.min(bird.y, this.topHeight));
+            let distTop = Math.hypot(bird.x - closestX, bird.y - closestYTop);
+
+            // Tuyau inférieur
+            let closestYBottom = Math.max(this.bottomY, Math.min(bird.y, this.bottomY + this.bottomHeight));
+            let distBottom = Math.hypot(bird.x - closestX, bird.y - closestYBottom);
+
+            return (distTop < bird.radius || distBottom < bird.radius);
+        }
+
+        draw(ctx) {
+            ctx.save();
+            // Dégradé de vert métallique pour l'ambiance premium
+            let pipeGrad = ctx.createLinearGradient(this.x, 0, this.x + CONFIG.PIPE_WIDTH, 0);
+            pipeGrad.addColorStop(0, '#2e7d32');
+            pipeGrad.addColorStop(0.3, '#4caf50');
+            pipeGrad.addColorStop(0.7, '#81c784');
+            pipeGrad.addColorStop(1, '#1b5e20');
+
+            ctx.fillStyle = pipeGrad;
+            ctx.strokeStyle = '#0e230e';
+            ctx.lineWidth = 3.5;
+
+            // Tuyau supérieur
+            ctx.fillRect(this.x, 0, CONFIG.PIPE_WIDTH, this.topHeight);
+            ctx.strokeRect(this.x, 0, CONFIG.PIPE_WIDTH, this.topHeight);
+            // Bordure supérieure
+            ctx.fillRect(this.x - 4, this.topHeight - 24, CONFIG.PIPE_WIDTH + 8, 24);
+            ctx.strokeRect(this.x - 4, this.topHeight - 24, CONFIG.PIPE_WIDTH + 8, 24);
+
+            // Tuyau inférieur
+            ctx.fillRect(this.x, this.bottomY, CONFIG.PIPE_WIDTH, this.bottomHeight);
+            ctx.strokeRect(this.x, this.bottomY, CONFIG.PIPE_WIDTH, this.bottomHeight);
+            // Bordure inférieure
+            ctx.fillRect(this.x - 4, this.bottomY, CONFIG.PIPE_WIDTH + 8, 24);
+            ctx.strokeRect(this.x - 4, this.bottomY, CONFIG.PIPE_WIDTH + 8, 24);
+
+            ctx.restore();
+        }
+    }
+
+    // ==========================================
+    // MOTEUR PRINCIPAL DU JEU (Engine)
+    // ==========================================
+    class Engine {
+        constructor() {
+            this.canvas = document.getElementById('gameCanvas');
+            this.ctx = this.canvas.getContext('2d');
+            
+            this.STATES = { START: 0, PLAYING: 1, GAMEOVER: 2, SHOP: 3 };
+            this.state = this.STATES.START;
+
+            this.saveData = SaveSystem.get();
+            
+            this.player = new Player();
+            this.player.activeSkin = this.saveData.activeSkin;
+
+            this.pipes = [];
+            this.coins = [];
+            this.particles = new ParticleSystem();
+
+            this.spawnTimer = 0;
+            this.score = 0;
+            this.currentSpeed = CONFIG.BASE_SPEED;
+
+            this.lastTime = 0;
+            this.groundOffset = 0;
+            this.shakeIntensity = 0;
+
+            this.clouds = [
+                { x: 50, y: 80, scale: 0.8 },
+                { x: 250, y: 140, scale: 1.1 },
+                { x: 400, y: 70, scale: 0.9 }
+            ];
+
+            this.setupEventListeners();
+        }
+
+        start() {
+            this.lastTime = performance.now();
+            requestAnimationFrame((time) => this.loop(time));
+        }
+
+        triggerShake() {
+            this.shakeIntensity = 12; // Force de la secousse de l'appareil
+        }
+
+        reset() {
+            this.score = 0;
+            this.currentSpeed = CONFIG.BASE_SPEED;
+            this.pipes = [];
+            this.coins = [];
+            this.spawnTimer = 0;
+            this.player.reset();
+            this.particles.clear();
+            this.state = this.STATES.PLAYING;
+        }
+
+        loop(time) {
+            let dt = (time - this.lastTime) / 1000;
+            if (dt > 0.1) dt = 0.1; // Limite pour éviter les téléportations si lag important
+            this.lastTime = time;
+
+            this.update(dt);
+            this.draw();
+
+            requestAnimationFrame((t) => this.loop(t));
+        }
+
+        update(dt) {
+            // Atténuation progressive de l'effet de secousse de caméra
+            if (this.shakeIntensity > 0) {
+                this.shakeIntensity -= dt * 40;
+            }
+
+            // Gestion de l'arrière-plan passif (nuages)
+            let cloudSpeed = this.state === this.STATES.PLAYING ? this.currentSpeed * 0.1 : 15;
+            this.clouds.forEach(cloud => {
+                cloud.x -= cloudSpeed * dt;
+                if (cloud.x + 80 < 0) cloud.x = this.canvas.width + 20;
+            });
+
+            if (this.state === this.STATES.PLAYING) {
+                this.player.update(dt, this.particles);
+                this.particles.update(dt);
+
+                // Défilement du sol
+                this.groundOffset = (this.groundOffset - this.currentSpeed * dt) % 15;
+
+                // Logique de spawn d'obstacles
+                this.spawnTimer += dt;
+                if (this.spawnTimer >= CONFIG.SPAWN_INTERVAL) {
+                    this.pipes.push(new Pipe(this.canvas.width, this.canvas.height));
+                    
+                    // Une chance sur deux de faire apparaître une pièce d'or au milieu du tuyau
+                    if (Math.random() < 0.6) {
+                        let lastPipe = this.pipes[this.pipes.length - 1];
+                        this.coins.push(new Coin(
+                            lastPipe.x + CONFIG.PIPE_WIDTH / 2, 
+                            lastPipe.topHeight + CONFIG.PIPE_GAP / 2
+                        ));
+                    }
+                    this.spawnTimer = 0;
+                }
+
+                // Update et collisions des obstacles
+                for (let i = this.pipes.length - 1; i >= 0; i--) {
+                    this.pipes[i].update(this.currentSpeed, dt);
+
+                    // Calcul de score
+                    if (!this.pipes[i].passed && this.pipes[i].x + CONFIG.PIPE_WIDTH < this.player.x) {
+                        this.pipes[i].passed = true;
+                        this.score++;
+                        audio.playScore();
+                        this.particles.spawnScoreExplosion(this.player.x, this.player.y);
+
+                        // Difficultée lissée logarithmique
+                        this.currentSpeed = CONFIG.BASE_SPEED + Math.log(this.score + 1) * 35;
+                    }
+
+                    if (this.pipes[i].checkCollision(this.player)) {
+                        this.gameOver();
+                    }
+
+                    if (this.pipes[i].x + CONFIG.PIPE_WIDTH < 0) {
+                        this.pipes.splice(i, 1);
+                    }
+                }
+
+                // Update et collisions des pièces
+                for (let i = this.coins.length - 1; i >= 0; i--) {
+                    this.coins[i].update(this.currentSpeed, dt);
+
+                    if (this.coins[i].checkCollision(this.player)) {
+                        this.coins[i].collected = true;
+                        this.saveData.coins++;
+                        SaveSystem.save(this.saveData);
+                        audio.playCoin();
+                        // Explosion de particules dorées
+                        this.particles.spawnScoreExplosion(this.coins[i].x, this.coins[i].y);
+                    }
+
+                    if (this.coins[i].x + 30 < 0 || this.coins[i].collected) {
+                        this.coins.splice(i, 1);
+                    }
+                }
+
+                // Collision avec le sol
+                if (this.player.y + this.player.radius >= this.canvas.height - CONFIG.GROUND_HEIGHT) {
+                    this.player.y = this.canvas.height - CONFIG.GROUND_HEIGHT - this.player.radius;
+                    this.gameOver();
+                }
+            } else {
+                // Flottement de l'oiseau sur l'accueil
+                if (this.state === this.STATES.START) {
+                    this.player.y = 280 + Math.sin(Date.now() * 0.005) * 12;
+                }
+                this.particles.update(dt);
+            }
+        }
+
+        gameOver() {
+            audio.playHit();
+            this.triggerShake();
+            this.particles.spawnDeathExplosion(this.player.x, this.player.y, SKINS[this.player.activeSkin].color);
+            this.state = this.STATES.GAMEOVER;
+
+            if (this.score > this.saveData.highScore) {
+                this.saveData.highScore = this.score;
+            }
+            SaveSystem.save(this.saveData);
+        }
+
+        draw() {
+            this.ctx.save();
+            
+            // Effet Screen Shake
+            if (this.shakeIntensity > 0) {
+                let dx = (Math.random() - 0.5) * this.shakeIntensity;
+                let dy = (Math.random() - 0.5) * this.shakeIntensity;
+                this.ctx.translate(dx, dy);
+            }
+
+            this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
+
+            // 1. Décor d'arrière-plan progressif selon le score (Cycle de couleur jour/soir/nuit)
+            let bgGradient = this.ctx.createLinearGradient(0, 0, 0, this.canvas.height);
+            if (this.score < 10) {
+                bgGradient.addColorStop(0, '#1a0c2e');
+                bgGradient.addColorStop(1, '#3a1c5e');
+            } else if (this.score < 25) {
+                bgGradient.addColorStop(0, '#0c1a2e');
+                bgGradient.addColorStop(1, '#1c3d5e');
+            } else {
+                bgGradient.addColorStop(0, '#050a12');
+                bgGradient.addColorStop(1, '#0c1624');
+            }
+            this.ctx.fillStyle = bgGradient;
+            this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+            // Nuages
+            this.ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
+            this.clouds.forEach(cloud => {
+                this.ctx.beginPath();
+                this.ctx.arc(cloud.x, cloud.y, 20 * cloud.scale, 0, Math.PI * 2);
+                this.ctx.arc(cloud.x + 15 * cloud.scale, cloud.y - 10 * cloud.scale, 25 * cloud.scale, 0, Math.PI * 2);
+                this.ctx.arc(cloud.x + 35 * cloud.scale, cloud.y, 20 * cloud.scale, 0, Math.PI * 2);
+                this.ctx.closePath();
+                this.ctx.fill();
+            });
+
+            // Silhouette de collines lointaines
+            this.ctx.fillStyle = 'rgba(255, 255, 255, 0.03)';
+            this.ctx.beginPath();
+            this.ctx.moveTo(0, this.canvas.height - CONFIG.GROUND_HEIGHT);
+            this.ctx.quadraticCurveTo(120, this.canvas.height - 150, 240, this.canvas.height - CONFIG.GROUND_HEIGHT);
+            this.ctx.quadraticCurveTo(360, this.canvas.height - 130, 480, this.canvas.height - CONFIG.GROUND_HEIGHT);
+            this.ctx.fill();
+
+            // 2. Rendu des entités actives
+            this.pipes.forEach(pipe => pipe.draw(this.ctx));
+            this.coins.forEach(coin => coin.draw(this.ctx));
+            this.particles.draw(this.ctx);
+
+            if (this.state !== this.STATES.GAMEOVER) {
+                this.player.draw(this.ctx);
+            }
+
+            // 3. Dessin du sol texturé défilant
+            this.drawGround();
+
+            // 4. Couches interfaces graphiques (UI)
+            this.drawUI();
+
+            this.ctx.restore();
+        }
+
+        drawGround() {
+            const gy = this.canvas.height - CONFIG.GROUND_HEIGHT;
+            // Sol
+            this.ctx.fillStyle = '#221929';
+            this.ctx.fillRect(0, gy, this.canvas.width, CONFIG.GROUND_HEIGHT);
+            
+            // Bande de pelouse néon supérieure
+            this.ctx.fillStyle = '#9b59b6';
+            this.ctx.fillRect(0, gy, this.canvas.width, 14);
+
+            this.ctx.strokeStyle = '#110b14';
+            this.ctx.lineWidth = 3;
+            this.ctx.beginPath();
+            this.ctx.moveTo(0, gy);
+            this.ctx.lineTo(this.canvas.width, gy);
+            this.ctx.moveTo(0, gy + 14);
+            this.ctx.lineTo(this.canvas.width, gy + 14);
+            this.ctx.stroke();
+
+            // Motifs hachurés de sol défilant
+            this.ctx.fillStyle = '#7d3c98';
+            let step = 15;
+            for (let x = this.groundOffset; x < this.canvas.width + step; x += step) {
+                this.ctx.beginPath();
+                this.ctx.moveTo(x, gy + 14);
+                this.ctx.lineTo(x + 8, gy);
+                this.ctx.lineTo(x + 13, gy);
+                this.ctx.lineTo(x + 5, gy + 14);
+                this.ctx.closePath();
+                this.ctx.fill();
+            }
+        }
+
+        drawUI() {
+            // Affichage permanent de la monnaie collectée en haut à droite
+            this.ctx.fillStyle = '#FFD700';
+            this.ctx.font = 'bold 20px "Segoe UI", sans-serif';
+            this.ctx.textAlign = 'right';
+            this.ctx.fillText(`✨ ${this.saveData.coins}`, this.canvas.width - 20, 35);
+
+            if (this.state === this.STATES.START) {
+                // Overlay sombre
+                this.ctx.fillStyle = 'rgba(10, 8, 16, 0.6)';
+                this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+                // Titre Style Retro-Neon
+                this.ctx.textAlign = 'center';
+                this.ctx.fillStyle = '#9b59b6';
+                this.ctx.font = 'bold 42px "Segoe UI", sans-serif';
+                this.ctx.shadowColor = '#8e44ad';
+                this.ctx.shadowBlur = 15;
+                this.ctx.fillText('FLAPPY PREMIUM', this.canvas.width / 2, 170);
+                this.ctx.shadowBlur = 0; // Reset ombre
+
+                // Bouton Start
+                this.drawButton(this.canvas.width / 2, 340, 200, 50, 'JOUER', '#9b59b6');
+
+                // Bouton Shop
+                this.drawButton(this.canvas.width / 2, 410, 200, 50, 'BOUTIQUE', '#2c3e50');
+
+                // Meilleur score
+                this.ctx.fillStyle = '#bdc3c7';
+                this.ctx.font = '16px "Segoe UI", sans-serif';
+                this.ctx.fillText(`MEILLEUR SCORE : ${this.saveData.highScore}`, this.canvas.width / 2, 230);
+
+            } else if (this.state === this.STATES.PLAYING) {
+                // Score temps réel fluide
+                this.ctx.fillStyle = '#FFF';
+                this.ctx.font = 'bold 56px "Segoe UI", sans-serif';
+                this.ctx.textAlign = 'center';
+                this.ctx.fillText(this.score, this.canvas.width / 2, 90);
+
+            } else if (this.state === this.STATES.GAMEOVER) {
+                this.ctx.fillStyle = 'rgba(0,0,0,0.7)';
+                this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+                // Fenêtre Game Over
+                const rectX = this.canvas.width / 2 - 150;
+                const rectY = 130;
+                this.ctx.fillStyle = '#1a1f29';
+                this.ctx.strokeStyle = '#34495e';
+                this.ctx.lineWidth = 4;
+                this.ctx.beginPath();
+                this.ctx.roundRect(rectX, rectY, 300, 240, 16);
+                this.ctx.fill();
+                this.ctx.stroke();
+
+                this.ctx.fillStyle = '#e74c3c';
+                this.ctx.font = 'bold 30px "Segoe UI", sans-serif';
+                this.ctx.textAlign = 'center';
+                this.ctx.fillText('PARTIE TERMINÉE', this.canvas.width / 2, 185);
+
+                this.ctx.fillStyle = '#FFF';
+                this.ctx.font = '20px "Segoe UI", sans-serif';
+                this.ctx.fillText(`SCORE : ${this.score}`, this.canvas.width / 2, 240);
+                this.ctx.fillStyle = '#FFD700';
+                this.ctx.fillText(`MEILLEUR : ${this.saveData.highScore}`, this.canvas.width / 2, 285);
+
+                // Bouton Rejouer
+                this.drawButton(this.canvas.width / 2, 410, 220, 50, 'REESSAYER', '#e74c3c');
+                // Bouton Retour Accueil
+                this.drawButton(this.canvas.width / 2, 480, 220, 50, 'MENU PRINCIPAL', '#34495e');
+
+            } else if (this.state === this.STATES.SHOP) {
+                // Rendu boutique
+                this.ctx.fillStyle = 'rgba(10, 8, 16, 0.9)';
+                this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+
+                this.ctx.fillStyle = '#FFF';
+                this.ctx.font = 'bold 32px "Segoe UI", sans-serif';
+                this.ctx.textAlign = 'center';
+                this.ctx.fillText('SKINS SHOP', this.canvas.width / 2, 80);
+
+                // Liste de skins statique
+                let yOffset = 160;
+                Object.keys(SKINS).forEach(key => {
+                    const skin = SKINS[key];
+                    const isUnlocked = this.saveData.unlockedSkins.includes(key);
+                    const isActive = this.saveData.activeSkin === key;
+
+                    this.ctx.fillStyle = '#1a1f29';
+                    this.ctx.beginPath();
+                    this.ctx.roundRect(40, yOffset - 35, this.canvas.width - 80, 70, 10);
+                    this.ctx.fill();
+
+                    // Rendu de prévisualisation de la couleur de l'oiseau
+                    this.ctx.fillStyle = skin.color;
+                    this.ctx.beginPath();
+                    this.ctx.arc(75, yOffset, 14, 0, Math.PI * 2);
+                    this.ctx.fill();
+
+                    this.ctx.fillStyle = '#FFF';
+                    this.ctx.font = 'bold 18px "Segoe UI", sans-serif';
+                    this.ctx.textAlign = 'left';
+                    this.ctx.fillText(skin.name, 110, yOffset + 6);
+
+                    // Bouton d'achat / sélection
+                    if (isActive) {
+                        this.drawButton(this.canvas.width - 100, yOffset, 100, 35, 'ACTIF', '#2ecc71', 14);
+                    } else if (isUnlocked) {
+                        this.drawButton(this.canvas.width - 100, yOffset, 100, 35, 'EQUIPER', '#3498db', 14);
+                    } else {
+                        this.drawButton(this.canvas.width - 100, yOffset, 100, 35, `💰 ${skin.price}`, '#f1c40f', 14);
+                    }
+
+                    yOffset += 90;
+                });
+
+                // Bouton Retour
+                this.drawButton(this.canvas.width / 2, 520, 200, 50, 'RETOUR', '#95a5a6');
+            }
+        }
+
+        drawButton(x, y, w, h, text, color, fontSize = 18) {
+            this.ctx.save();
+            this.ctx.fillStyle = color;
+            this.ctx.beginPath();
+            this.ctx.roundRect(x - w / 2, y - h / 2, w, h, 8);
+            this.ctx.fill();
+
+            this.ctx.fillStyle = '#FFF';
+            this.ctx.font = `bold ${fontSize}px "Segoe UI", sans-serif`;
+            this.ctx.textAlign = 'center';
+            this.ctx.textBaseline = 'middle';
+            this.ctx.fillText(text, x, y);
+            this.ctx.restore();
+        }
+
+        setupEventListeners() {
+            const triggerAction = (clientX, clientY) => {
+                const rect = this.canvas.getBoundingClientRect();
+                const x = (clientX - rect.left) * (this.canvas.width / rect.width);
+                const y = (clientY - rect.top) * (this.canvas.height / rect.height);
+
+                if (this.state === this.STATES.START) {
+                    // Clic bouton Jouer
+                    if (x > this.canvas.width / 2 - 100 && x < this.canvas.width / 2 + 100) {
+                        if (y > 340 - 25 && y < 340 + 25) {
+                            audio.init();
+                            this.reset();
+                        }
+                        // Clic bouton Boutique
+                        else if (y > 410 - 25 && y < 410 + 25) {
+                            audio.init();
+                            this.state = this.STATES.SHOP;
+                        }
+                    }
+                } else if (this.state === this.STATES.PLAYING) {
+                    this.player.jump(this.particles);
+                } else if (this.state === this.STATES.GAMEOVER) {
+                    // Clic bouton Rejouer
+                    if (x > this.canvas.width / 2 - 110 && x < this.canvas.width / 2 + 110) {
+                        if (y > 410 - 25 && y < 410 + 25) {
+                            this.reset();
+                        }
+                        // Clic Retour Accueil
+                        else if (y > 480 - 25 && y < 480 + 25) {
+                            this.state = this.STATES.START;
+                        }
+                    }
+                } else if (this.state === this.STATES.SHOP) {
+                    // Clic Retour
+                    if (x > this.canvas.width / 2 - 100 && x < this.canvas.width / 2 + 100 && y > 520 - 25 && y < 520 + 25) {
+                        this.state = this.STATES.START;
+                        return;
+                    }
+
+                    // Sélection / achat de skins
+                    let yOffset = 160;
+                    Object.keys(SKINS).forEach(key => {
+                        const skin = SKINS[key];
+                        const isUnlocked = this.saveData.unlockedSkins.includes(key);
+                        const btnX = this.canvas.width - 100;
+
+                        if (x > btnX - 50 && x < btnX + 50 && y > yOffset - 17 && y < yOffset + 17) {
+                            if (isUnlocked) {
+                                this.saveData.activeSkin = key;
+                                this.player.activeSkin = key;
+                                SaveSystem.save(this.saveData);
+                            } else if (this.saveData.coins >= skin.price) {
+                                this.saveData.coins -= skin.price;
+                                this.saveData.unlockedSkins.push(key);
+                                this.saveData.activeSkin = key;
+                                this.player.activeSkin = key;
+                                SaveSystem.save(this.saveData);
+                                audio.playCoin();
+                            }
+                        }
+                        yOffset += 90;
+                    });
+                }
+            };
+
+            // Support clavier
+            window.addEventListener('keydown', (e) => {
+                if (e.code === 'Space' || e.code === 'ArrowUp') {
+                    e.preventDefault();
+                    if (this.state === this.STATES.PLAYING) {
+                        this.player.jump(this.particles);
+                    } else if (this.state === this.STATES.START) {
+                        this.reset();
+                    }
+                }
+            });
+
+            // Touch et Souris
+            this.canvas.addEventListener('mousedown', (e) => {
+                e.preventDefault();
+                triggerAction(e.clientX, e.clientY);
+            });
+
+            this.canvas.addEventListener('touchstart', (e) => {
+                e.preventDefault();
+                const touch = e.touches[0];
+                triggerAction(touch.clientX, touch.clientY);
+            }, { passive: false });
+        }
+    }
+
+    // ==========================================
+    // INITIALISATION DU MOTEUR
+    // ==========================================
+    const game = new Engine();
+    game.start();
+</script>
+
+</body>
+</html>
